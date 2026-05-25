@@ -163,5 +163,3 @@ Feature tests cover ingestion, duplicates, AI failure, vague emails, approval ru
 ```bash
 php artisan test
 ```
-
-In this execution environment the test run could not complete because `pdo_sqlite` is not installed and the configured MySQL server was not reachable, but the route table and PHP syntax were validated successfully.

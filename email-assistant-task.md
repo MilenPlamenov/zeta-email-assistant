@@ -1,5 +1,5 @@
 # ZETA Case — Laravel + AI: Email-to-Task Assistant
-
+important! - ⚠️ A small, coherent, well-explained solution is better than an overengineered one. We are looking for clean architecture, good judgment, and clear thinking — not the biggest implementation.
 ## Overview
 
 This project is a lightweight backend system built with Laravel that transforms incoming email messages into structured task drafts using an AI abstraction layer.
