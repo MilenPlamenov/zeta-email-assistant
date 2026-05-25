@@ -1,58 +1,167 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# ZETA Email Assistant
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Small Laravel API that ingests raw emails, interprets them through an AI abstraction layer, and creates reviewable task drafts. The system is intentionally synchronous and simple: every incoming email is stored first, interpreted second, and only becomes actionable after a human reviews the generated draft.
 
-## About Laravel
+## API
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+`POST /api/incoming-emails`
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+Accepts:
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+```json
+{
+  "sender": "client@example.com",
+  "subject": "Checkout error on production",
+  "body": "Customers report a broken checkout flow with clear reproduction steps..."
+}
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Creates:
 
-## Contributing
+- `incoming_emails` record with the raw message
+- `ai_evaluations` record for the interpretation attempt
+- `task_drafts` record in `pending_review`
+- `audit_logs` entries for traceability
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Other endpoints:
 
-## Code of Conduct
+- `GET /api/task-drafts/{id}`
+- `POST /api/task-drafts/{id}/approve`
+- `POST /api/task-drafts/{id}/reject`
+- `POST /api/task-drafts/{id}/override`
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+## Architecture
 
-## Security Vulnerabilities
+The project follows a thin-controller, service-oriented structure:
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+- Controllers only coordinate HTTP input/output.
+- `IncomingEmailProcessor` owns ingestion, duplicate detection, AI interpretation, persistence, and failure handling.
+- `TaskDraftReviewService` owns review-state transitions: approve, reject, override.
+- `AuditLogger` centralizes audit entries instead of scattering them across controllers.
+- `EmailTaskInterpreter` is an interface, so the mocked interpreter can later be replaced with OpenAI, Claude, or another provider without changing business flow.
 
-## License
+### AI abstraction
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Current implementation uses `MockEmailTaskInterpreter`, a deterministic rules-based adapter that classifies emails into:
+
+- `bug_report`
+- `feature_request`
+- `customer_feedback`
+
+It also returns:
+
+- title
+- summary
+- priority
+- suggested team
+- confidence score
+- missing information
+- suggested next action
+
+The mock intentionally simulates one failure mode when the email contains `simulate-ai-failure`, which makes it easy to test the unhappy path.
+
+## Data model
+
+### `incoming_emails`
+
+Stores raw sender, subject, body, processing status, failure reason, and a unique content hash for duplicate protection.
+
+### `task_drafts`
+
+Stores the structured suggestion to be reviewed by a human:
+
+- task type
+- title
+- summary
+- priority
+- suggested team
+- confidence score
+- missing information
+- suggested next action
+- review status and operator note
+
+### `ai_evaluations`
+
+Stores provider/model metadata, success or failure status, confidence, raw output, and error details if interpretation fails.
+
+### `approval_decisions`
+
+Stores explicit human actions:
+
+- approved
+- rejected
+- overridden
+
+It also stores the operator note and override payload when applicable.
+
+### `audit_logs`
+
+Captures workflow events such as:
+
+- email received
+- task draft generated
+- AI evaluation failed
+- task approved
+- task rejected
+- task overridden
+
+## Human approval flow
+
+1. An email is submitted to `POST /api/incoming-emails`.
+2. The backend stores the raw email and runs the interpreter.
+3. A `task_draft` is created with `pending_review`.
+4. A human operator can:
+   - approve the draft
+   - reject the draft
+   - override one or more AI-generated fields with a required reason
+5. Every action is persisted as both a decision record and an audit log.
+
+## Failure handling included
+
+Implemented failure and edge-case handling:
+
+- missing required request fields
+- duplicate email ingestion
+- AI evaluation failure
+- too-vague email content that lowers confidence and marks missing information
+- approving the same draft twice
+- override attempt without a reason
+- review actions blocked after terminal states where appropriate
+
+## Trade-offs and simplifications
+
+- No authentication layer, because the assignment focuses on backend architecture and workflow.
+- No queues, because synchronous processing keeps the example smaller and easier to review.
+- No real LLM integration yet, because the interface boundary is the important part for this stage.
+- No final `tasks` table, because the brief asks for reviewable drafts rather than automatic task creation.
+
+## What I would improve next
+
+- Replace the mock interpreter with a real provider adapter and prompt versioning.
+- Move ingestion and AI evaluation to queued jobs with retries.
+- Add authentication/authorization for review actions.
+- Add idempotency keys or mailbox message IDs for stronger duplicate detection.
+- Introduce a final approved task entity or downstream integration with Jira/ClickUp.
+- Add richer audit actor context once authentication exists.
+
+## Local setup
+
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan serve
+```
+
+The current `.env` is configured for MySQL. Update credentials as needed before running migrations.
+
+## Testing
+
+Feature tests cover ingestion, duplicates, AI failure, vague emails, approval rules, overrides, and fetch flow.
+
+```bash
+php artisan test
+```
+
+In this execution environment the test run could not complete because `pdo_sqlite` is not installed and the configured MySQL server was not reachable, but the route table and PHP syntax were validated successfully.
